@@ -62,26 +62,25 @@ value_t Barnes_Hut(value_t* VAL,
   CUML_LOG_DEBUG("N_nodes = %d blocks = %d", nnodes, blocks);
 
   // Allocate more space
-  // rmm::device_uvector<unsigned> errl(1, stream);
   rmm::device_scalar<unsigned> limiter(stream);
-  rmm::device_scalar<value_idx> maxdepthd(stream);
   rmm::device_scalar<value_idx> bottomd(stream);
   rmm::device_scalar<value_t> radiusd(stream);
 
-  BH::InitializationKernel<<<1, 1, 0, stream>>>(/*errl.data(),*/
-                                                limiter.data(),
-                                                maxdepthd.data(),
+  BH::InitializationKernel<<<1, 1, 0, stream>>>(limiter.data(),
                                                 radiusd.data());
   CUDA_CHECK(cudaPeekAtLastError());
 
-  const value_idx FOUR_NNODES = 4 * nnodes;
-  const value_idx FOUR_N      = 4 * n;
-  const float theta_squared   = params.theta * params.theta;
-  const value_idx NNODES      = nnodes;
+  const value_idx EIGHT_NNODES = 8 * nnodes;
+  const value_idx EIGHT_N      = 8 * n;
+  const value_idx NNODES       = nnodes;
+  const value_t dtime          = 0.025;
+  const value_t dthf           = dtime * 0.5f;
+  const value_t itolsq         = 1.0f / (params.theta * params.theta);
+  const auto dim               = 3; //TODO: params.dim
 
   // Actual allocations
   rmm::device_uvector<value_idx> startl(nnodes + 1, stream);
-  rmm::device_uvector<value_idx> childl((nnodes + 1) * 4, stream);
+  rmm::device_uvector<value_idx> childl((nnodes + 1) * 8, stream);
   rmm::device_uvector<value_t> massl(nnodes + 1, stream);
 
   thrust::device_ptr<value_t> begin_massl = thrust::device_pointer_cast(massl.data());
@@ -89,8 +88,10 @@ value_t Barnes_Hut(value_t* VAL,
 
   rmm::device_uvector<value_t> maxxl(blocks * FACTOR1, stream);
   rmm::device_uvector<value_t> maxyl(blocks * FACTOR1, stream);
+  rmm::device_uvector<value_t> maxzl(blocks * FACTOR1, stream);
   rmm::device_uvector<value_t> minxl(blocks * FACTOR1, stream);
   rmm::device_uvector<value_t> minyl(blocks * FACTOR1, stream);
+  rmm::device_uvector<value_t> minzl(blocks * FACTOR1, stream);
 
   // SummarizationKernel
   rmm::device_uvector<value_idx> countl(nnodes + 1, stream);
@@ -99,7 +100,7 @@ value_t Barnes_Hut(value_t* VAL,
   rmm::device_uvector<value_idx> sortl(nnodes + 1, stream);
 
   // RepulsionKernel
-  rmm::device_uvector<value_t> rep_forces((nnodes + 1) * 2, stream);
+  rmm::device_uvector<value_t> rep_forces((nnodes + 1) * 2, stream); //vell
   rmm::device_uvector<value_t> attr_forces(n * 2, stream);  // n*2 double for reduction sum
 
   rmm::device_scalar<value_t> Z_norm(stream);
@@ -115,12 +116,15 @@ value_t Barnes_Hut(value_t* VAL,
   rmm::device_uvector<value_t> old_forces(n * 2, stream);
   CUDA_CHECK(cudaMemsetAsync(old_forces.data(), 0, sizeof(value_t) * n * 2, stream));
 
-  rmm::device_uvector<value_t> YY((nnodes + 1) * 2, stream);
+  rmm::device_uvector<value_t> YY((nnodes + 1) * dim, stream);
   if (params.initialize_embeddings) {
-    random_vector(YY.data(), -0.0001f, 0.0001f, (nnodes + 1) * 2, stream, params.random_state);
+    random_vector(YY.data(), -0.0001f, 0.0001f, (nnodes + 1) * dim, stream, params.random_state);
   } else {
     raft::copy(YY.data(), Y, n, stream);
     raft::copy(YY.data() + nnodes + 1, Y + n, n, stream);
+    if (dim == 3) {
+      raft::copy(YY.data() + (nnodes + 1) * 2, Y + 2 * n, n, stream);
+    }
   }
 
   rmm::device_uvector<value_t> tmp(NNZ, stream);
@@ -181,11 +185,12 @@ value_t Barnes_Hut(value_t* VAL,
                                                                      massl.data(),
                                                                      YY.data(),
                                                                      YY.data() + nnodes + 1,
+                                                                     YY.data() + 2 * (nnodes + 1),
                                                                      maxxl.data(),
                                                                      maxyl.data(),
                                                                      minxl.data(),
                                                                      minyl.data(),
-                                                                     FOUR_NNODES,
+                                                                     EIGHT_NNODES,
                                                                      NNODES,
                                                                      n,
                                                                      limiter.data(),
@@ -195,16 +200,17 @@ value_t Barnes_Hut(value_t* VAL,
     END_TIMER(BoundingBoxKernel_time);
 
     START_TIMER;
-    BH::ClearKernel1<<<blocks, 1024, 0, stream>>>(childl.data(), FOUR_NNODES, FOUR_N);
+    BH::ClearKernel1<<<blocks, 1024, 0, stream>>>(childl.data(), EIGHT_NNODES, EIGHT_N);
     CUDA_CHECK(cudaPeekAtLastError());
 
     END_TIMER(ClearKernel1_time);
 
     START_TIMER;
     BH::TreeBuildingKernel<<<blocks * FACTOR2, THREADS2, 0, stream>>>(
-      /*errl.data(),*/ childl.data(),
+      childl.data(),
       YY.data(),
       YY.data() + nnodes + 1,
+      YY.data() + 2 * (nnodes + 1),
       NNODES,
       n,
       maxdepthd.data(),
@@ -227,6 +233,7 @@ value_t Barnes_Hut(value_t* VAL,
                                                                        massl.data(),
                                                                        YY.data(),
                                                                        YY.data() + nnodes + 1,
+                                                                       YY.data() + (nnodes + 1) * 2,
                                                                        NNODES,
                                                                        n,
                                                                        bottomd.data());
@@ -243,19 +250,19 @@ value_t Barnes_Hut(value_t* VAL,
 
     START_TIMER;
     BH::RepulsionKernel<<<blocks * FACTOR5, THREADS5, 0, stream>>>(
-      /*errl.data(),*/ params.theta,
       params.epssq,
       sortl.data(),
       childl.data(),
       massl.data(),
       YY.data(),
       YY.data() + nnodes + 1,
-      rep_forces.data(),
-      rep_forces.data() + nnodes + 1,
+      YY.data() + (nnodes + 1) * 2,
+      rep_forces.data(), // velx
+      rep_forces.data() + nnodes + 1, //vely
       Z_norm.data(),
-      theta_squared,
+      itolsq,
       NNODES,
-      FOUR_NNODES,
+      EIGHT_NNODES,
       n,
       radiusd_squared.data(),
       maxdepthd.data());

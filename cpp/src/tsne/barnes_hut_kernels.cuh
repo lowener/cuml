@@ -17,21 +17,19 @@
 #pragma once
 #define restrict __restrict__
 
-#define THREADS1 512
-#define THREADS2 512
-#define THREADS3 768
-#define THREADS4 128
+#define THREADS1 1024  /* must be a power of 2 */
+#define THREADS2 1024
+#define THREADS3 768   /* shared-memory limited on some devices */
+#define THREADS4 1024
 #define THREADS5 1024
 #define THREADS6 1024
-#define THREADS7 1024
 
-#define FACTOR1 3
-#define FACTOR2 3
-#define FACTOR3 1
-#define FACTOR4 4
+#define FACTOR1 2
+#define FACTOR2 2
+#define FACTOR3 1  /* must all be resident at the same time */
+#define FACTOR4 1  /* must all be resident at the same time */
 #define FACTOR5 2
 #define FACTOR6 2
-#define FACTOR7 1
 
 #include <float.h>
 #include <raft/cudart_utils.h>
@@ -45,13 +43,9 @@ namespace BH {
  * Intializes the states of objects. This speeds the overall kernel up.
  */
 template <typename value_idx, typename value_t>
-__global__ void InitializationKernel(/*int *restrict errd, */
-                                     unsigned* restrict limiter,
-                                     value_idx* restrict maxdepthd,
+__global__ void InitializationKernel(unsigned* restrict limiter,
                                      value_t* restrict radiusd)
 {
-  // errd[0] = 0;
-  maxdepthd[0] = 1;
   limiter[0]   = 0;
   radiusd[0]   = 0.0f;
 }
@@ -90,22 +84,26 @@ __global__ __launch_bounds__(THREADS1) void BoundingBoxKernel(value_idx* restric
                                                               value_t* restrict massd,
                                                               value_t* restrict posxd,
                                                               value_t* restrict posyd,
+                                                              value_t* restrict poszd,
                                                               value_t* restrict maxxd,
                                                               value_t* restrict maxyd,
+                                                              value_t* restrict maxzd,
                                                               value_t* restrict minxd,
                                                               value_t* restrict minyd,
-                                                              const value_idx FOUR_NNODES,
+                                                              value_t* restrict minzd,
+                                                              const value_idx EIGHT_NNODES,
                                                               const value_idx NNODES,
                                                               const value_idx N,
                                                               unsigned* restrict limiter,
                                                               value_t* restrict radiusd)
 {
-  value_t val, minx, maxx, miny, maxy;
-  __shared__ value_t sminx[THREADS1], smaxx[THREADS1], sminy[THREADS1], smaxy[THREADS1];
+  value_t val, minx, maxx, miny, maxy, minz, maxz;
+  __shared__ value_t sminx[THREADS1], smaxx[THREADS1], sminy[THREADS1], smaxy[THREADS1], , sminz[THREADS1], smaxz[THREADS1];
 
   // initialize with valid data (in case #bodies < #threads)
   minx = maxx = posxd[0];
   miny = maxy = posyd[0];
+  minz = maxz = poszd[0];
 
   // scan all bodies
   const auto i   = threadIdx.x;
@@ -122,6 +120,12 @@ __global__ __launch_bounds__(THREADS1) void BoundingBoxKernel(value_idx* restric
       miny = val;
     else if (val > maxy)
       maxy = val;
+
+    val = poszd[j];
+    if (val < minz)
+      minz = val;
+    else if (val > maxz)
+      maxz = val;
   }
 
   // reduction in shared memory
@@ -129,6 +133,8 @@ __global__ __launch_bounds__(THREADS1) void BoundingBoxKernel(value_idx* restric
   smaxx[i] = maxx;
   sminy[i] = miny;
   smaxy[i] = maxy;
+  sminz[i] = minz;
+  smaxz[i] = maxz;
 
   for (auto j = THREADS1 / 2; j > i; j /= 2) {
     __syncthreads();
@@ -137,6 +143,8 @@ __global__ __launch_bounds__(THREADS1) void BoundingBoxKernel(value_idx* restric
     smaxx[i] = maxx = fmaxf(maxx, smaxx[k]);
     sminy[i] = miny = fminf(miny, sminy[k]);
     smaxy[i] = maxy = fmaxf(maxy, smaxy[k]);
+    sminz[i] = minz = fminf(minz, sminz[k]);
+    smaxz[i] = maxz = fmaxf(maxz, smaxz[k]);
   }
 
   if (i == 0) {
@@ -146,6 +154,8 @@ __global__ __launch_bounds__(THREADS1) void BoundingBoxKernel(value_idx* restric
     maxxd[k]     = maxx;
     minyd[k]     = miny;
     maxyd[k]     = maxy;
+    minyz[k]     = minz;
+    maxyz[k]     = maxz;
     __threadfence();
 
     const auto inc = gridDim.x - 1;
@@ -157,19 +167,23 @@ __global__ __launch_bounds__(THREADS1) void BoundingBoxKernel(value_idx* restric
       maxx = fmaxf(maxx, maxxd[j]);
       miny = fminf(miny, minyd[j]);
       maxy = fmaxf(maxy, maxyd[j]);
+      minz = fminf(minz, minzd[j]);
+      maxz = fmaxf(maxz, maxzd[j]);
     }
 
     // compute 'radius'
-    atomicExch(radiusd, fmaxf(maxx - minx, maxy - miny) * 0.5f + 1e-5f);
+    val = fmaxf(maxx - minx, maxy - miny);
+    atomicExch(radiusd, fmaxf(val, maxz - minz) * 0.5f);
 
     massd[NNODES]  = -1.0f;
     startd[NNODES] = 0;
     posxd[NNODES]  = (minx + maxx) * 0.5f;
     posyd[NNODES]  = (miny + maxy) * 0.5f;
+    poszd[NNODES]  = (minz + maxz) * 0.5f;
 
 #pragma unroll
-    for (auto a = 0; a < 4; a++)
-      childd[FOUR_NNODES + a] = -1;
+    for (auto a = 0; a < 8; a++)
+      childd[EIGHT_NNODES + a] = -1;
   }
 }
 
@@ -177,17 +191,17 @@ __global__ __launch_bounds__(THREADS1) void BoundingBoxKernel(value_idx* restric
  * Clear some of the state vectors up.
  */
 template <typename value_idx>
-__global__ __launch_bounds__(1024, 1) void ClearKernel1(value_idx* restrict childd,
-                                                        const value_idx FOUR_NNODES,
-                                                        const value_idx FOUR_N)
+__global__ __launch_bounds__(1024, 1) void ClearKernel1(value_idx* const restrict childd,
+                                                        const value_idx EIGHT_NNODES,
+                                                        const value_idx EIGHT_N)
 {
   const auto inc = blockDim.x * gridDim.x;
-  value_idx k    = (FOUR_N & -32) + threadIdx.x + blockIdx.x * blockDim.x;
-  if (k < FOUR_N) k += inc;
+  value_idx k    = (EIGHT_N & -32) + threadIdx.x + blockIdx.x * blockDim.x;
+  if (k < EIGHT_N) k += inc;
 
 // iterate over all cells assigned to thread
 #pragma unroll
-  for (; k < FOUR_NNODES; k += inc)
+  for (; k < EIGHT_NNODES; k += inc)
     childd[k] = -1;
 }
 
@@ -196,27 +210,28 @@ __global__ __launch_bounds__(1024, 1) void ClearKernel1(value_idx* restrict chil
  * See: https://iss.oden.utexas.edu/Publications/Papers/burtscher11.pdf
  */
 template <typename value_idx, typename value_t>
-__global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(/* int *restrict errd, */
-                                                               value_idx* restrict childd,
+__global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(value_idx* restrict childd,
                                                                const value_t* restrict posxd,
                                                                const value_t* restrict posyd,
+                                                               const value_t* restrict poszd,
                                                                const value_idx NNODES,
                                                                const value_idx N,
                                                                value_idx* restrict maxdepthd,
                                                                value_idx* restrict bottomd,
                                                                const value_t* restrict radiusd)
 {
+  const value_idx maxdepth = 32;
   value_idx j, depth;
-  value_t x, y, r;
-  value_t px, py;
+  value_t x, y, z, r;
+  value_t px, py, pz;
   value_idx ch, n, locked, patch;
 
   // cache root data
-  const value_t radius = radiusd[0];
+  const value_t radius = radiusd[0] * 0.5f;
   const value_t rootx  = posxd[NNODES];
   const value_t rooty  = posyd[NNODES];
+  const value_t rootz  = poszd[NNODES];
 
-  value_idx localmaxdepth = 1;
   value_idx skip          = 1;
 
   const auto inc = blockDim.x * gridDim.x;
@@ -224,47 +239,48 @@ __global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(/* int *restrict 
 
   // iterate over all bodies assigned to thread
   while (i < N) {
+    px = posxd[i];
+    py = posyd[i];
+    pz = poszd[i];
     if (skip != 0) {
       // new body, so start traversing at root
       skip  = 0;
       n     = NNODES;
       depth = 1;
-      r     = radius * 0.5f;
+      r     = radius;
 
       /* Select child node 'j'
                     rootx < px  rootx > px
        * rooty < py   1 -> 3    0 -> 2
        * rooty > py   1 -> 1    0 -> 0
        */
-      x = rootx + ((rootx < (px = posxd[i])) ? (j = 1, r) : (j = 0, -r));
-
-      y = rooty + ((rooty < (py = posyd[i])) ? (j |= 2, r) : (-r));
+      x = rootx + ((rootx < px) ? (j = 1, r) : (j = 0, -r));
+      y = rooty + ((rooty < py) ? (j |= 2, r) : (-r));
+      z = rootz + ((rootz < pz) ? (j |= 4, r) : (-r));
     }
 
     // follow path to leaf cell
-    while ((ch = childd[n * 4 + j]) >= N) {
+    while ((ch = childd[n * 8 + j]) >= N) {
       n = ch;
       depth++;
       r *= 0.5f;
 
       x += ((x < px) ? (j = 1, r) : (j = 0, -r));
-
       y += ((y < py) ? (j |= 2, r) : (-r));
+      z += ((z < pz) ? (j |= 4, r) : (-r));
     }
 
     // (ch)ild will be '-1' (nullptr), '-2' (locked), or an Integer corresponding to a body offset
     // in the lower [0, N) blocks of childd
     if (ch != -2) {
       // skip if child pointer was locked when we examined it, and try again later.
-      locked = n * 4 + j;
+      locked = n * 8 + j;
       // store the locked position in case we need to patch in a cell later.
 
       if (ch == -1) {
         // Child is a nullptr ('-1'), so we write our body index to the leaf, and move on to the
         // next body.
         if (atomicCAS(&childd[locked], (value_idx)-1, i) == -1) {
-          if (depth > localmaxdepth) localmaxdepth = depth;
-
           i += inc;  // move on to next body
           skip = 1;
         }
@@ -276,39 +292,36 @@ __global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(/* int *restrict 
 
           while (ch >= 0) {
             depth++;
-
-            const value_idx cell = atomicAdd(bottomd, (value_idx)-1) - 1;
-            if (cell == N) {
-              atomicExch(reinterpret_cast<unsigned long long int*>(bottomd),
-                         (unsigned long long int)NNODES);
-            } else if (cell < N) {
-              depth--;
-              continue;
+            if (depth > maxdepth) {
+              throw raft::exception("Maximum depth exceeded (bodies are too close together)");
             }
 
-            if (patch != -1) childd[n * 4 + j] = cell;
+            const value_idx cell = atomicAdd(bottomd, (value_idx)-1) - 1;
+            if (cell <= N) {
+              throw raft::exception("Out of cell memory");
+            }
+
+            if (patch != -1) childd[n * 8 + j] = cell;
 
             if (cell > patch) patch = cell;
 
             // Insert migrated child node
             j = (x < posxd[ch]) ? 1 : 0;
             if (y < posyd[ch]) j |= 2;
+            if (z < poszd[ch]) j |= 4;
 
-            childd[cell * 4 + j] = ch;
+            childd[cell * 8 + j] = ch;
             n                    = cell;
             r *= 0.5f;
 
             x += ((x < px) ? (j = 1, r) : (j = 0, -r));
-
             y += ((y < py) ? (j |= 2, r) : (-r));
+            z += ((z < pz) ? (j |= 4, r) : (-r));
 
-            ch = childd[n * 4 + j];
-            if (r <= 1e-10) { break; }
+            ch = childd[n * 8 + j];
           }
 
-          childd[n * 4 + j] = i;
-
-          if (depth > localmaxdepth) localmaxdepth = depth;
+          childd[n * 8 + j] = i;
 
           i += inc;  // move on to next body
           skip = 2;
@@ -316,25 +329,19 @@ __global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(/* int *restrict 
       }
     }
 
+    __syncthreads(); // optional barrier for performance
     __threadfence();
 
     if (skip == 2) childd[locked] = patch;
   }
-
-  // record maximum tree depth
-  // if (localmaxdepth >= THREADS5)
-  //   localmaxdepth = THREADS5 - 1;
-  if (localmaxdepth > 32) localmaxdepth = 32;
-
-  atomicMax(maxdepthd, localmaxdepth);
 }
 
 /**
  * Clean more state vectors.
  */
 template <typename value_idx, typename value_t>
-__global__ __launch_bounds__(1024, 1) void ClearKernel2(value_idx* restrict startd,
-                                                        value_t* restrict massd,
+__global__ __launch_bounds__(1024, 1) void ClearKernel2(value_idx* const restrict startd,
+                                                        value_t* const restrict massd,
                                                         const value_idx NNODES,
                                                         const value_idx* restrict bottomd)
 {
@@ -361,14 +368,14 @@ __global__ __launch_bounds__(THREADS3,
                                                                volatile value_t* restrict massd,
                                                                value_t* restrict posxd,
                                                                value_t* restrict posyd,
+                                                               value_t* restrict poszd,
                                                                const value_idx NNODES,
                                                                const value_idx N,
                                                                const value_idx* restrict bottomd)
 {
-  bool flag = 0;
-  value_t cm, px, py;
-  __shared__ value_idx child[THREADS3 * 4];
-  __shared__ value_t mass[THREADS3 * 4];
+  value_t cm, px, py, py;
+  __shared__ value_idx child[THREADS3 * 8];
+  __shared__ value_t mass[THREADS3 * 8];
 
   const auto bottom = bottomd[0];
   const auto inc    = blockDim.x * gridDim.x;
@@ -377,13 +384,13 @@ __global__ __launch_bounds__(THREADS3,
 
   const auto restart = k;
 
-  for (int j = 0; j < 5; j++)  // wait-free pre-passes
+  for (int j = 0; j < 3; j++)  // wait-free pre-passes
   {
     // iterate over all cells assigned to thread
     while (k <= NNODES) {
       if (massd[k] < 0.0f) {
-        for (int i = 0; i < 4; i++) {
-          const auto ch                     = childd[k * 4 + i];
+        for (int i = 0; i < 8; i++) {
+          const auto ch                     = childd[k * 8 + i];
           child[i * THREADS3 + threadIdx.x] = ch;
 
           if ((ch >= N) and ((mass[i * THREADS3 + threadIdx.x] = massd[ch]) < 0))
@@ -394,10 +401,11 @@ __global__ __launch_bounds__(THREADS3,
         cm       = 0.0f;
         px       = 0.0f;
         py       = 0.0f;
+        pz       = 0.0f;
         auto cnt = 0;
 
 #pragma unroll
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 8; i++) {
           const int ch = child[i * THREADS3 + threadIdx.x];
           if (ch >= 0) {
             const value_t m = (ch >= N) ? (cnt += countd[ch], mass[i * THREADS3 + threadIdx.x])
@@ -406,6 +414,7 @@ __global__ __launch_bounds__(THREADS3,
             cm += m;
             px += posxd[ch] * m;
             py += posyd[ch] * m;
+            pz += poszd[ch] * m;
           }
         }
 
@@ -413,6 +422,7 @@ __global__ __launch_bounds__(THREADS3,
         const value_t m = 1.0f / cm;
         posxd[k]        = px * m;
         posyd[k]        = py * m;
+        poszd[k]        = pz * m;
         __threadfence();  // make sure data are visible before setting mass
         massd[k] = cm;
       }
@@ -427,21 +437,20 @@ __global__ __launch_bounds__(THREADS3,
   // iterate over all cells assigned to thread
   while (k <= NNODES) {
     if (massd[k] >= 0) {
-      k += inc;
       goto SKIP_LOOP;
     }
 
     if (j == 0) {
-      j = 4;
-      for (int i = 0; i < 4; i++) {
-        const auto ch = childd[k * 4 + i];
+      j = 8;
+      for (int i = 0; i < 8; i++) {
+        const auto ch = childd[k * 8 + i];
 
         child[i * THREADS3 + threadIdx.x] = ch;
         if ((ch < N) or ((mass[i * THREADS3 + threadIdx.x] = massd[ch]) >= 0)) j--;
       }
     } else {
-      j = 4;
-      for (int i = 0; i < 4; i++) {
+      j = 8;
+      for (int i = 0; i < 8; i++) {
         const auto ch = child[i * THREADS3 + threadIdx.x];
 
         if ((ch < N) or (mass[i * THREADS3 + threadIdx.x] >= 0) or
@@ -455,6 +464,7 @@ __global__ __launch_bounds__(THREADS3,
       cm       = 0.0f;
       px       = 0.0f;
       py       = 0.0f;
+      pz       = 0.0f;
       auto cnt = 0;
 
 #pragma unroll
@@ -467,6 +477,7 @@ __global__ __launch_bounds__(THREADS3,
           cm += m;
           px += posxd[ch] * m;
           py += posyd[ch] * m;
+          pz += poszd[ch] * m;
         }
       }
 
@@ -474,16 +485,13 @@ __global__ __launch_bounds__(THREADS3,
       const value_t m = 1.0f / cm;
       posxd[k]        = px * m;
       posyd[k]        = py * m;
-      flag            = 1;
+      poszd[k]        = pz * m;
+      __threadfence();
+      massd[k]        = cm;
     }
 
   SKIP_LOOP:
-    __threadfence();
-    if (flag != 0) {
-      massd[k] = cm;
-      k += inc;
-      flag = 0;
-    }
+    k += inc;
   }
 }
 
@@ -514,13 +522,13 @@ __global__ __launch_bounds__(THREADS4, FACTOR4) void SortKernel(value_idx* restr
     if ((start = startd[k]) < 0) continue;
 
     int j = 0;
-    for (int i = 0; i < 4; i++) {
-      const auto ch = childd[k * 4 + i];
+    for (int i = 0; i < 8; i++) {
+      const auto ch = childd[k * 8 + i];
       if (ch >= 0) {
         if (i != j) {
           // move children to front (needed later for speed)
-          childd[k * 4 + i] = -1;
-          childd[k * 4 + j] = ch;
+          childd[k * 8 + i] = -1;
+          childd[k * 8 + j] = ch;
         }
         if (ch >= N) {
           // child is a cell
@@ -542,20 +550,19 @@ __global__ __launch_bounds__(THREADS4, FACTOR4) void SortKernel(value_idx* restr
  */
 template <typename value_idx, typename value_t>
 __global__ __launch_bounds__(
-  THREADS5, 1) void RepulsionKernel(/* int *restrict errd, */
-                                    const float theta,
-                                    const float epssqd,  // correction for zero distance
+  THREADS5, 1) void RepulsionKernel(const float epssqd,  // correction for zero distance
                                     const value_idx* restrict sortd,
                                     const value_idx* restrict childd,
                                     const value_t* restrict massd,
                                     const value_t* restrict posxd,
                                     const value_t* restrict posyd,
+                                    const value_t* restrict poszd,
                                     value_t* restrict velxd,
                                     value_t* restrict velyd,
                                     value_t* restrict Z_norm,
-                                    const value_t theta_squared,
+                                    const value_t itolsq,
                                     const value_idx NNODES,
-                                    const value_idx FOUR_NNODES,
+                                    const value_idx EIGHT_NNODES,
                                     const value_idx N,
                                     const value_t* restrict radiusd_squared,
                                     const value_idx* restrict maxdepthd)
@@ -568,13 +575,14 @@ __global__ __launch_bounds__(
   //   return;
   // }
   const value_t EPS_PLUS_1 = epssqd + 1.0f;
+  const int warpsize = 32;
 
   __shared__ value_idx pos[THREADS5], node[THREADS5];
   __shared__ value_t dq[THREADS5];
 
   if (threadIdx.x == 0) {
-    const auto max_depth = maxdepthd[0];
-    dq[0]                = __fdividef(radiusd_squared[0], theta_squared);
+    const auto max_depth = 32;
+    dq[0]                = 4 * radiusd_squared[0] * itolsq;
 
     for (auto i = 1; i < max_depth; i++) {
       dq[i] = dq[i - 1] * 0.25f;
@@ -591,7 +599,7 @@ __global__ __launch_bounds__(
   // figure out first thread in each warp (lane 0)
   // const int base = threadIdx.x / 32;
   // const int sbase = base * 32;
-  const int sbase            = (threadIdx.x / 32) * 32;
+  const int sbase            = (threadIdx.x / warpsize) * warpsize;
   const bool SBASE_EQ_THREAD = (sbase == threadIdx.x);
 
   const int diff = threadIdx.x - sbase;
@@ -604,7 +612,7 @@ __global__ __launch_bounds__(
   __threadfence_block();
 
   // iterate over all bodies assigned to thread
-  const auto MAX_SIZE = FOUR_NNODES + 4;
+  const auto MAX_SIZE = EIGHT_NNODES + 8;
 
   for (auto k = threadIdx.x + blockIdx.x * blockDim.x; k < N; k += blockDim.x * gridDim.x) {
     const auto i = sortd[k];  // get permuted/sorted index
@@ -613,17 +621,17 @@ __global__ __launch_bounds__(
 
     const value_t px = posxd[i];
     const value_t py = posyd[i];
+    const value_t pz = poszd[i];
 
-    value_t vx      = 0.0f;
-    value_t vy      = 0.0f;
-    value_t normsum = 0.0f;
-
+    value_t ax      = 0.0f;
+    value_t ay      = 0.0f;
+    value_t az      = 0.0f;
     // initialize iteration stack, i.e., push root node onto stack
     int depth = sbase;
 
     if (SBASE_EQ_THREAD == true) {
       pos[sbase]  = 0;
-      node[sbase] = FOUR_NNODES;
+      node[sbase] = EIGHT_NNODES;
     }
 
     do {
@@ -631,7 +639,7 @@ __global__ __launch_bounds__(
       auto pd = pos[depth];
       auto nd = node[depth];
 
-      while (pd < 4) {
+      while (pd < 8) {
         const auto index = nd + pd++;
         if (index < 0 or index >= MAX_SIZE) break;
 
@@ -642,13 +650,15 @@ __global__ __launch_bounds__(
 
         const value_t dx   = px - posxd[n];
         const value_t dy   = py - posyd[n];
-        const value_t dxy1 = dx * dx + dy * dy + EPS_PLUS_1;
+        const value_t dz   = pz - poszd[n];
+        const value_t dxy1 = dx * dx + dy * dy + dz * dz + EPS_PLUS_1;
 
-        if ((n < N) or __all_sync(__activemask(), dxy1 >= dq[depth])) {
-          const value_t tdist_2 = __fdividef(massd[n], dxy1 * dxy1);
-          normsum += tdist_2 * dxy1;
-          vx += dx * tdist_2;
-          vy += dy * tdist_2;
+        if ((n < N) or __all_sync(0xffffffff, dxy1 >= dq[depth])) {
+          const value_t tdist_2 = rsqrtf(dxy1);
+          const value_t tdist_3 = massd[n] * tdist_2 * tdist_2 * tdist_2;
+          ax += dx * tdist_3;
+          ay += dy * tdist_3;
+          az += dz * tdist_3;
         } else {
           // push cell onto stack
           if (SBASE_EQ_THREAD == true) {
@@ -657,11 +667,15 @@ __global__ __launch_bounds__(
           }
           depth++;
           pd = 0;
-          nd = n * 4;
+          nd = n * 8;
         }
       }
 
     } while (--depth >= sbase);  // done with this level
+
+    /*
+    TODO: accVeld
+    */
 
     // update velocity
     velxd[i] += vx;
