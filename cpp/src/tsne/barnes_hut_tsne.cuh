@@ -71,10 +71,8 @@ value_t Barnes_Hut(value_t* VAL,
                                                 radiusd.data());
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 
-  const auto dim               = params.dim;
-  const value_idx dim2         = std::pow(2, dim);
-  const value_idx EIGHT_NNODES = dim2 * nnodes;
-  const value_idx EIGHT_N      = dim2 * n;
+  const value_idx FOUR_NNODES = 4 * nnodes;
+  const value_idx FOUR_N      = 4 * n;
   const value_idx NNODES       = nnodes;
   const value_t dtime          = 0.025;
   const value_t dthf           = dtime * 0.5f;
@@ -82,7 +80,7 @@ value_t Barnes_Hut(value_t* VAL,
 
   // Actual allocations
   rmm::device_uvector<value_idx> startl(nnodes + 1, stream);
-  rmm::device_uvector<value_idx> childl((nnodes + 1) * dim2, stream);
+  rmm::device_uvector<value_idx> childl((nnodes + 1) * 4, stream);
   rmm::device_uvector<value_t> massl(nnodes + 1, stream);
 
   thrust::device_ptr<value_t> begin_massl = thrust::device_pointer_cast(massl.data());
@@ -90,10 +88,8 @@ value_t Barnes_Hut(value_t* VAL,
 
   rmm::device_uvector<value_t> maxxl(blocks * FACTOR1, stream);
   rmm::device_uvector<value_t> maxyl(blocks * FACTOR1, stream);
-  rmm::device_uvector<value_t> maxzl(blocks * FACTOR1, stream);
   rmm::device_uvector<value_t> minxl(blocks * FACTOR1, stream);
   rmm::device_uvector<value_t> minyl(blocks * FACTOR1, stream);
-  rmm::device_uvector<value_t> minzl(blocks * FACTOR1, stream);
 
   // SummarizationKernel
   rmm::device_uvector<value_idx> countl(nnodes + 1, stream);
@@ -102,8 +98,8 @@ value_t Barnes_Hut(value_t* VAL,
   rmm::device_uvector<value_idx> sortl(nnodes + 1, stream);
 
   // RepulsionKernel
-  rmm::device_uvector<value_t> rep_forces((nnodes + 1) * dim, stream); //vell
-  rmm::device_uvector<value_t> attr_forces(n * dim, stream);  // n*2 double for reduction sum
+  rmm::device_uvector<value_t> rep_forces((nnodes + 1) * 2, stream); //vell
+  rmm::device_uvector<value_t> attr_forces(n * 2, stream);  // n*2 double for reduction sum
 
   rmm::device_scalar<value_t> Z_norm(stream);
 
@@ -118,13 +114,12 @@ value_t Barnes_Hut(value_t* VAL,
   rmm::device_uvector<value_t> old_forces(n * 2, stream);
   RAFT_CUDA_TRY(cudaMemsetAsync(old_forces.data(), 0, sizeof(value_t) * n * 2, stream));
 
-  rmm::device_uvector<value_t> YY((nnodes + 1) * dim, stream);
+  rmm::device_uvector<value_t> YY((nnodes + 1) * 2, stream);
   if (params.initialize_embeddings) {
-    random_vector(YY.data(), -0.0001f, 0.0001f, (nnodes + 1) * dim, stream, params.random_state);
+    random_vector(YY.data(), -0.0001f, 0.0001f, (nnodes + 1) * 2, stream, params.random_state);
   } else {
-    for (auto i = 0; i < dim; i++) {
-      raft::copy(YY.data() + (nnodes + 1) * dim, Y + n * dim, n, stream);
-    }
+    raft::copy(YY.data() + (nnodes + 1), Y + n, n, stream);
+    raft::copy(YY.data() + (nnodes + 1) * 2, Y + n * 2, n, stream);
   }
 
   rmm::device_uvector<value_t> tmp(NNZ, stream);
@@ -134,33 +129,20 @@ value_t Barnes_Hut(value_t* VAL,
   // Set cache levels for faster algorithm execution
   //---------------------------------------------------
   RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::BoundingBoxKernel<2, value_idx, value_t>, cudaFuncCachePreferShared));
+    cudaFuncSetCacheConfig(BH::BoundingBoxKernel<value_idx, value_t>, cudaFuncCachePreferShared));
   RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::BoundingBoxKernel<3, value_idx, value_t>, cudaFuncCachePreferShared));
-  RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::TreeBuildingKernel<2, value_idx, value_t>, cudaFuncCachePreferL1));
-    RAFT_CUDA_TRY(
-      cudaFuncSetCacheConfig(BH::TreeBuildingKernel<3, value_idx, value_t>, cudaFuncCachePreferL1));
+    cudaFuncSetCacheConfig(BH::TreeBuildingKernel<value_idx, value_t>, cudaFuncCachePreferL1));
   RAFT_CUDA_TRY(cudaFuncSetCacheConfig(BH::ClearKernel1<value_idx>, cudaFuncCachePreferL1));
   RAFT_CUDA_TRY(cudaFuncSetCacheConfig(BH::ClearKernel2<value_idx, value_t>, cudaFuncCachePreferL1));
   RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::SummarizationKernel<2, value_idx, value_t>, cudaFuncCachePreferShared));
+    cudaFuncSetCacheConfig(BH::SummarizationKernel<value_idx, value_t>, cudaFuncCachePreferShared));
+  RAFT_CUDA_TRY(cudaFuncSetCacheConfig(BH::SortKernel<value_idx>, cudaFuncCachePreferL1));
   RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::SummarizationKernel<3, value_idx, value_t>, cudaFuncCachePreferShared));
-  RAFT_CUDA_TRY(cudaFuncSetCacheConfig(BH::SortKernel<2, value_idx>, cudaFuncCachePreferL1));
-  RAFT_CUDA_TRY(cudaFuncSetCacheConfig(BH::SortKernel<3, value_idx>, cudaFuncCachePreferL1));
+    cudaFuncSetCacheConfig(BH::RepulsionKernel<value_idx, value_t>, cudaFuncCachePreferL1));
   RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::RepulsionKernel<2, value_idx, value_t>, cudaFuncCachePreferL1));
+    cudaFuncSetCacheConfig(BH::attractive_kernel_bh<value_idx, value_t>, cudaFuncCachePreferL1));
   RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::RepulsionKernel<3, value_idx, value_t>, cudaFuncCachePreferL1));
-  RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::attractive_kernel_bh<2, value_idx, value_t>, cudaFuncCachePreferL1));
-  RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::attractive_kernel_bh<3, value_idx, value_t>, cudaFuncCachePreferL1));
-  RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::IntegrationKernel<2, value_idx, value_t>, cudaFuncCachePreferL1));
-  RAFT_CUDA_TRY(
-    cudaFuncSetCacheConfig(BH::IntegrationKernel<3, value_idx, value_t>, cudaFuncCachePreferL1));
+    cudaFuncSetCacheConfig(BH::IntegrationKernel<value_idx, value_t>, cudaFuncCachePreferL1));
   // Do gradient updates
   //---------------------------------------------------
   CUML_LOG_DEBUG("Start gradient updates!");
@@ -193,75 +175,39 @@ value_t Barnes_Hut(value_t* VAL,
     }
 
     START_TIMER;
-    if (dim == 2) {
-      BH::BoundingBoxKernel<2><<<blocks * FACTOR1, THREADS1, 0, stream>>>(startl.data(),
-                                                                        childl.data(),
-                                                                        massl.data(),
-                                                                        YY.data(),
-                                                                        YY.data() + nnodes + 1,
-                                                                        YY.data() + 2 * (nnodes + 1),
-                                                                        maxxl.data(),
-                                                                        maxyl.data(),
-                                                                        maxzl.data(),
-                                                                        minxl.data(),
-                                                                        minyl.data(),
-                                                                        minzl.data(),
-                                                                        EIGHT_NNODES,
-                                                                        NNODES,
-                                                                        n,
-                                                                        limiter.data(),
-                                                                        radiusd.data());
-    }
-    else if (dim == 3) {
-      BH::BoundingBoxKernel<3><<<blocks * FACTOR1, THREADS1, 0, stream>>>(startl.data(),
-                                                                      childl.data(),
-                                                                      massl.data(),
-                                                                      YY.data(),
-                                                                      YY.data() + nnodes + 1,
-                                                                      YY.data() + 2 * (nnodes + 1),
-                                                                      maxxl.data(),
-                                                                      maxyl.data(),
-                                                                      maxzl.data(),
-                                                                      minxl.data(),
-                                                                      minyl.data(),
-                                                                      minzl.data(),
-                                                                      EIGHT_NNODES,
-                                                                      NNODES,
-                                                                      n,
-                                                                      limiter.data(),
-                                                                      radiusd.data());
-    }
+    BH::BoundingBoxKernel<<<blocks * FACTOR1, THREADS1, 0, stream>>>(startl.data(),
+                                                                     childl.data(),
+                                                                     massl.data(),
+                                                                     YY.data(),
+                                                                     YY.data() + nnodes + 1,
+                                                                     maxxl.data(),
+                                                                     maxyl.data(),
+                                                                     minxl.data(),
+                                                                     minyl.data(),
+                                                                     FOUR_NNODES,
+                                                                     NNODES,
+                                                                     n,
+                                                                     limiter.data(),
+                                                                     radiusd.data());
+
     RAFT_CUDA_TRY(cudaPeekAtLastError());
 
     END_TIMER(BoundingBoxKernel_time);
 
     START_TIMER;
-    BH::ClearKernel1<<<blocks, 1024, 0, stream>>>(childl.data(), EIGHT_NNODES, EIGHT_N);
+    BH::ClearKernel1<<<blocks, 1024, 0, stream>>>(childl.data(), FOUR_NNODES, FOUR_N);
     RAFT_CUDA_TRY(cudaPeekAtLastError());
     END_TIMER(ClearKernel1_time);
 
     START_TIMER;
-    if (dim == 2) {
-      BH::TreeBuildingKernel<2><<<blocks * FACTOR2, THREADS2, 0, stream>>>(
-        childl.data(),
-        YY.data(),
-        YY.data() + nnodes + 1,
-        YY.data() + 2 * (nnodes + 1),
-        NNODES,
-        n,
-        bottomd.data(),
-        radiusd.data());
-    } else if (dim == 3) {
-      BH::TreeBuildingKernel<3><<<blocks * FACTOR2, THREADS2, 0, stream>>>(
-        childl.data(),
-        YY.data(),
-        YY.data() + nnodes + 1,
-        YY.data() + 2 * (nnodes + 1),
-        NNODES,
-        n,
-        bottomd.data(),
-        radiusd.data());
-    } 
+    BH::TreeBuildingKernel<<<blocks * FACTOR2, THREADS2, 0, stream>>>(
+      childl.data(),
+      YY.data(),
+      YY.data() + nnodes + 1,
+      NNODES,
+      n,
+      bottomd.data(),
+      radiusd.data());
     RAFT_CUDA_TRY(cudaPeekAtLastError());
 
     END_TIMER(TreeBuildingKernel_time);
@@ -274,81 +220,41 @@ value_t Barnes_Hut(value_t* VAL,
     END_TIMER(ClearKernel2_time);
 
     START_TIMER;
-    if (dim == 2) {
-      BH::SummarizationKernel<2><<<blocks * FACTOR3, THREADS3, 0, stream>>>(countl.data(),
+    BH::SummarizationKernel<<<blocks * FACTOR3, THREADS3, 0, stream>>>(countl.data(),
                                                                        childl.data(),
                                                                        massl.data(),
                                                                        YY.data(),
                                                                        YY.data() + nnodes + 1,
-                                                                       YY.data() + (nnodes + 1) * 2,
                                                                        NNODES,
                                                                        n,
                                                                        bottomd.data());
-    } else if (dim == 3) {
-      BH::SummarizationKernel<3><<<blocks * FACTOR3, THREADS3, 0, stream>>>(countl.data(),
-                                                                       childl.data(),
-                                                                       massl.data(),
-                                                                       YY.data(),
-                                                                       YY.data() + nnodes + 1,
-                                                                       YY.data() + (nnodes + 1) * 2,
-                                                                       NNODES,
-                                                                       n,
-                                                                       bottomd.data());
-    }
     RAFT_CUDA_TRY(cudaPeekAtLastError());
 
     END_TIMER(SummarizationKernel_time);
 
     START_TIMER;
-    if (dim == 2) {
-      BH::SortKernel<2><<<blocks * FACTOR4, THREADS4, 0, stream>>>(
-        sortl.data(), countl.data(), startl.data(), childl.data(), NNODES, n, bottomd.data());
-    } else if (dim == 3) {
-      BH::SortKernel<3><<<blocks * FACTOR4, THREADS4, 0, stream>>>(
-        sortl.data(), countl.data(), startl.data(), childl.data(), NNODES, n, bottomd.data());
-    }
+    BH::SortKernel<<<blocks * FACTOR4, THREADS4, 0, stream>>>(
+      sortl.data(), countl.data(), startl.data(), childl.data(), NNODES, n, bottomd.data());
     RAFT_CUDA_TRY(cudaPeekAtLastError());
 
     END_TIMER(SortKernel_time);
 
     START_TIMER;
-    if (dim == 2) {
-      BH::RepulsionKernel<2><<<blocks * FACTOR5, THREADS5, 0, stream>>>(
-        params.epssq,
-        sortl.data(),
-        childl.data(),
-        massl.data(),
-        YY.data(),
-        YY.data() + nnodes + 1,
-        YY.data() + (nnodes + 1) * 2,
-        rep_forces.data(), // velx
-        rep_forces.data() + nnodes + 1, //vely
-        rep_forces.data() + (nnodes + 1) * 2, //velz
-        Z_norm.data(),
-        itolsq,
-        NNODES,
-        EIGHT_NNODES,
-        n,
-        radiusd_squared.data());
-      } else if (dim == 3) {
-        BH::RepulsionKernel<3><<<blocks * FACTOR5, THREADS5, 0, stream>>>(
-          params.epssq,
-          sortl.data(),
-          childl.data(),
-          massl.data(),
-          YY.data(),
-          YY.data() + nnodes + 1,
-          YY.data() + (nnodes + 1) * 2,
-          rep_forces.data(), // velx
-          rep_forces.data() + nnodes + 1, //vely
-          rep_forces.data() + (nnodes + 1) * 2, //velz
-          Z_norm.data(),
-          itolsq,
-          NNODES,
-          EIGHT_NNODES,
-          n,
-          radiusd_squared.data());
-      }
+    BH::RepulsionKernel<<<blocks * FACTOR5, THREADS5, 0, stream>>>(
+      params.epssq,
+      sortl.data(),
+      childl.data(),
+      massl.data(),
+      YY.data(),
+      YY.data() + nnodes + 1,
+      rep_forces.data(), // velx
+      rep_forces.data() + nnodes + 1, //vely
+      Z_norm.data(),
+      itolsq,
+      NNODES,
+      FOUR_NNODES,
+      n,
+      radiusd_squared.data());
     RAFT_CUDA_TRY(cudaPeekAtLastError());
 
     END_TIMER(RepulsionTime);
@@ -362,36 +268,17 @@ value_t Barnes_Hut(value_t* VAL,
     // TODO: Calculate Kullback-Leibler divergence
     // For general embedding dimensions
     bool last_iter = iter == params.max_iter - 1;
-
-    if (dim == 2) {
-      BH::attractive_kernel_bh<2><<<raft::ceildiv(NNZ, (value_idx)1024), 1024, 0, stream>>>(
-        VAL,
-        COL,
-        ROW,
-        YY.data(),
-        YY.data() + nnodes + 1,
-        YY.data() + (nnodes + 1) * 2,
-        attr_forces.data(),
-        attr_forces.data() + n,
-        attr_forces.data() + n * 2,
-        last_iter ? Qs : nullptr,
-        NNZ,
-        fmaxf(params.dim - 1, 1));
-      } else if (dim == 3) {
-        BH::attractive_kernel_bh<3><<<raft::ceildiv(NNZ, (value_idx)1024), 1024, 0, stream>>>(
-          VAL,
-          COL,
-          ROW,
-          YY.data(),
-          YY.data() + nnodes + 1,
-          YY.data() + (nnodes + 1) * 2,
-          attr_forces.data(),
-          attr_forces.data() + n,
-          attr_forces.data() + n * 2,
-          last_iter ? Qs : nullptr,
-          NNZ,
-          fmaxf(params.dim - 1, 1));
-        }
+    BH::attractive_kernel_bh<<<raft::ceildiv(NNZ, (value_idx)1024), 1024, 0, stream>>>(
+      VAL,
+      COL,
+      ROW,
+      YY.data(),
+      YY.data() + nnodes + 1,
+      attr_forces.data(),
+      attr_forces.data() + n,
+      last_iter ? Qs : nullptr,
+      NNZ,
+      fmaxf(params.dim - 1, 1));
     RAFT_CUDA_TRY(cudaPeekAtLastError());
     END_TIMER(attractive_time);
 
@@ -401,49 +288,21 @@ value_t Barnes_Hut(value_t* VAL,
     }
 
     START_TIMER;
-    if (dim == 2) {
-      BH::IntegrationKernel<2><<<blocks * FACTOR6, THREADS6, 0, stream>>>(learning_rate,
-                                                                      momentum,
-                                                                      params.early_exaggeration,
-                                                                      YY.data(),
-                                                                      YY.data() + nnodes + 1,
-                                                                      YY.data() + (nnodes + 1) * 2,
-                                                                      attr_forces.data(),
-                                                                      attr_forces.data() + n,
-                                                                      attr_forces.data() + n * 2,
-                                                                      rep_forces.data(),
-                                                                      rep_forces.data() + nnodes + 1,
-                                                                      rep_forces.data() + (nnodes + 1) * 2,
-                                                                      gains_bh.data(),
-                                                                      gains_bh.data() + n,
-                                                                      gains_bh.data() + n * 2,
-                                                                      old_forces.data(),
-                                                                      old_forces.data() + n,
-                                                                      old_forces.data() + n * 2,
-                                                                      Z_norm.data(),
-                                                                      n);
-    } else if (dim == 3) {
-      BH::IntegrationKernel<3><<<blocks * FACTOR6, THREADS6, 0, stream>>>(learning_rate,
-        momentum,
-        params.early_exaggeration,
-        YY.data(),
-        YY.data() + nnodes + 1,
-        YY.data() + (nnodes + 1) * 2,
-        attr_forces.data(),
-        attr_forces.data() + n,
-        attr_forces.data() + n * 2,
-        rep_forces.data(),
-        rep_forces.data() + nnodes + 1,
-        rep_forces.data() + (nnodes + 1) * 2,
-        gains_bh.data(),
-        gains_bh.data() + n,
-        gains_bh.data() + n * 2,
-        old_forces.data(),
-        old_forces.data() + n,
-        old_forces.data() + n * 2,
-        Z_norm.data(),
-        n);
-    }
+    BH::IntegrationKernel<<<blocks * FACTOR6, THREADS6, 0, stream>>>(learning_rate,
+      momentum,
+      params.early_exaggeration,
+      YY.data(),
+      YY.data() + nnodes + 1,
+      attr_forces.data(),
+      attr_forces.data() + n,
+      rep_forces.data(),
+      rep_forces.data() + nnodes + 1,
+      gains_bh.data(),
+      gains_bh.data() + n,
+      old_forces.data(),
+      old_forces.data() + n,
+      Z_norm.data(),
+      n);
     RAFT_CUDA_TRY(cudaPeekAtLastError());
 
     END_TIMER(IntegrationKernel_time);
@@ -453,7 +312,6 @@ value_t Barnes_Hut(value_t* VAL,
   // Copy final YY into true output Y
   raft::copy(Y, YY.data(), n, stream);
   raft::copy(Y + n, YY.data() + nnodes + 1, n, stream);
-  if (dim == 3) raft::copy(Y + n * 2, YY.data() + (nnodes + 1) * 2, n, stream);
 
   return kl_div;
 }
