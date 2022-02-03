@@ -32,6 +32,7 @@
 #define FACTOR6 2
 
 #include <float.h>
+#include <stdio.h>
 #include <raft/cudart_utils.h>
 #include <raft/device_atomics.cuh>
 
@@ -154,8 +155,7 @@ __global__ __launch_bounds__(THREADS1) void BoundingBoxKernel(value_idx* restric
     }
 
     // compute 'radius'
-    val = fmaxf(maxx - minx, maxy - miny);
-    atomicExch(radiusd, val * 0.5f);
+    atomicExch(radiusd, fmaxf(maxx - minx, maxy - miny) * 0.5f + 1e-5f);
 
     massd[NNODES]  = -1.0f;
     startd[NNODES] = 0;
@@ -268,14 +268,16 @@ __global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(value_idx* restri
           while (ch >= 0) {
             depth++;
             if (depth > maxdepth) {
+              //printf("Maximum depth exceeded\n");
               // Maximum depth exceeded (bodies are too close together)
-              asm("trap;");
+              break;
             }
 
             const value_idx cell = atomicAdd(bottomd, (value_idx)-1) - 1;
             if (cell <= N) {
               // Out of cell memory
-              asm("trap;");
+              printf("Out of cell memory\n");
+              break;
             }
 
             if (patch != -1) childd[n * 4 + j] = cell;
@@ -293,6 +295,7 @@ __global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(value_idx* restri
             x += ((x < px) ? (j = 1, r) : (j = 0, -r));
             y += ((y < py) ? (j |= 2, r) : (-r));
             ch = childd[n * 4 + j];
+            // if (r <= 1e-10) { printf("radius\n"); break; }
           }
 
           childd[n * 4 + j] = i;
@@ -634,10 +637,6 @@ __global__ __launch_bounds__(
       }
 
     } while (--depth >= sbase);  // done with this level
-
-    /*
-    TODO: accVeld
-    */
 
     // update velocity
     velxd[i] += ax;

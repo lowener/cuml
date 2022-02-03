@@ -21,6 +21,7 @@
 #include <cuml/manifold/tsne.h>
 #include <raft/cudart_utils.h>
 #include <raft/linalg/eltwise.cuh>
+#include <iostream>
 
 namespace ML {
 namespace TSNE {
@@ -118,8 +119,8 @@ value_t Barnes_Hut(value_t* VAL,
   if (params.initialize_embeddings) {
     random_vector(YY.data(), -0.0001f, 0.0001f, (nnodes + 1) * 2, stream, params.random_state);
   } else {
-    raft::copy(YY.data() + (nnodes + 1), Y + n, n, stream);
-    raft::copy(YY.data() + (nnodes + 1) * 2, Y + n * 2, n, stream);
+    raft::copy(YY.data(), Y, n, stream);
+    raft::copy(YY.data() + nnodes + 1, Y + n, n, stream);
   }
 
   rmm::device_uvector<value_t> tmp(NNZ, stream);
@@ -151,6 +152,7 @@ value_t Barnes_Hut(value_t* VAL,
   value_t learning_rate = params.pre_learning_rate;
 
   for (int iter = 0; iter < params.max_iter; iter++) {
+    std::cout << iter << '\n';
     RAFT_CUDA_TRY(cudaMemsetAsync(static_cast<void*>(rep_forces.data()),
                                   0,
                                   rep_forces.size() * sizeof(*rep_forces.data()),
