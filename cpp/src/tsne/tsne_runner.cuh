@@ -47,12 +47,12 @@ class TSNE_runner {
     this->Y = input.y;
 
     ML::Logger::get().setLevel(params.verbosity);
-    if (params.dim > 2 and params.algorithm != TSNE_ALGORITHM::EXACT) {
+    /*if (params.dim > 2 and params.algorithm != TSNE_ALGORITHM::EXACT) {
       params.algorithm = TSNE_ALGORITHM::EXACT;
       CUML_LOG_WARN(
         "Barnes Hut and FFT only work for dim == 2. Switching to exact "
         "solution.");
-    }
+    }*/
     if (params.n_neighbors > n) params.n_neighbors = n;
     if (params.n_neighbors > 1023) {
       CUML_LOG_WARN("FAISS only supports maximum n_neighbors = 1023.");

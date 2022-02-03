@@ -281,9 +281,9 @@ class TSNE(Base,
         if n_components < 0:
             raise ValueError("n_components = {} should be more "
                              "than 0.".format(n_components))
-        if n_components != 2:
-            raise ValueError("Currently TSNE supports n_components = 2; "
-                             "but got n_components = {}".format(n_components))
+        #if n_components != 2:
+        #    raise ValueError("Currently TSNE supports n_components = 2; "
+        #                     "but got n_components = {}".format(n_components))
         if perplexity < 0:
             raise ValueError("perplexity = {} should be more than 0.".format(
                              perplexity))
@@ -327,7 +327,7 @@ class TSNE(Base,
             raise ValueError("exaggeration_iter = {} should be more "
                              "than 0.".format(exaggeration_iter))
         if exaggeration_iter > n_iter:
-            raise ValueError("exaggeration_iter = {} should be more less "
+            raise ValueError("exaggeration_iter = {} should be more "
                              "than n_iter = {}.".format(exaggeration_iter,
                                                         n_iter))
         if pre_momentum < 0 or pre_momentum > 1:

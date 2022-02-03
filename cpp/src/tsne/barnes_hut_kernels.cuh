@@ -19,7 +19,7 @@
 
 #define THREADS1 1024  /* must be a power of 2 */
 #define THREADS2 1024
-#define THREADS3 768   /* shared-memory limited on some devices */
+#define THREADS3 384   /* shared-memory limited on some devices */
 #define THREADS4 1024
 #define THREADS5 1024
 #define THREADS6 1024
@@ -34,6 +34,7 @@
 #include <float.h>
 #include <raft/cudart_utils.h>
 #include <raft/device_atomics.cuh>
+#include <stdio.h>
 
 namespace ML {
 namespace TSNE {
@@ -227,14 +228,14 @@ __global__ __launch_bounds__(1024, 1) void ClearKernel1(value_idx* const restric
  * See: https://iss.oden.utexas.edu/Publications/Papers/burtscher11.pdf
  */
 template <int dim, typename value_idx, typename value_t>
-__global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(value_idx* restrict childd,
-                                                               const value_t* restrict posxd,
-                                                               const value_t* restrict posyd,
-                                                               const value_t* restrict poszd,
+__global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(value_idx* const restrict childd,
+                                                               const value_t* const restrict posxd,
+                                                               const value_t* const restrict posyd,
+                                                               const value_t* const restrict poszd,
                                                                const value_idx NNODES,
                                                                const value_idx N,
-                                                               value_idx* restrict bottomd,
-                                                               const value_t* restrict radiusd)
+                                                               value_idx* const restrict bottomd,
+                                                               const value_t* const restrict radiusd)
 {
   const value_idx maxdepth = 32;
   value_idx j, depth;
@@ -311,13 +312,17 @@ __global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(value_idx* restri
             depth++;
             if (depth > maxdepth) {
               // Maximum depth exceeded (bodies are too close together)
-              asm("trap;");
+              printf("Maximum depth\n");
+              break;
+              //asm("trap;");
             }
 
             const value_idx cell = atomicAdd(bottomd, (value_idx)-1) - 1;
             if (cell <= N) {
               // Out of cell memory
-              asm("trap;");
+              printf("Out of cell memory\n");
+              break;
+              //asm("trap;");
             }
 
             if (patch != -1) childd[n * dim2 + j] = cell;
@@ -328,7 +333,7 @@ __global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(value_idx* restri
             j = (x < posxd[ch]) ? 1 : 0;
             if (y < posyd[ch]) j |= 2;
             if constexpr (dim == 3) {
-            if (z < poszd[ch]) j |= 4;
+              if (z < poszd[ch]) j |= 4;
             }
 
             childd[cell * dim2 + j] = ch;
@@ -340,6 +345,7 @@ __global__ __launch_bounds__(THREADS2) void TreeBuildingKernel(value_idx* restri
             if constexpr (dim == 3) z += ((z < pz) ? (j |= 4, r) : (-r));
 
             ch = childd[n * dim2 + j];
+            //if (r <= 1e-10) { printf("radius\n"); break;}
           }
 
           childd[n * dim2 + j] = i;
@@ -364,7 +370,7 @@ template <typename value_idx, typename value_t>
 __global__ __launch_bounds__(1024, 1) void ClearKernel2(value_idx* const restrict startd,
                                                         value_t* const restrict massd,
                                                         const value_idx NNODES,
-                                                        const value_idx* restrict bottomd)
+                                                        const value_idx* const restrict bottomd)
 {
   const auto bottom = bottomd[0];
   const auto inc    = blockDim.x * gridDim.x;
@@ -384,15 +390,15 @@ __global__ __launch_bounds__(1024, 1) void ClearKernel2(value_idx* const restric
  */
 template <int dim, typename value_idx, typename value_t>
 __global__ __launch_bounds__(THREADS3,
-                             FACTOR3) void SummarizationKernel(value_idx* restrict countd,
-                                                               const value_idx* restrict childd,
-                                                               volatile value_t* restrict massd,
-                                                               value_t* restrict posxd,
-                                                               value_t* restrict posyd,
-                                                               value_t* restrict poszd,
+                             FACTOR3) void SummarizationKernel(value_idx* const restrict countd,
+                                                               const value_idx* const restrict childd,
+                                                               volatile value_t* const restrict massd,
+                                                               value_t* const restrict posxd,
+                                                               value_t* const restrict posyd,
+                                                               value_t* const restrict poszd,
                                                                const value_idx NNODES,
                                                                const value_idx N,
-                                                               const value_idx* restrict bottomd)
+                                                               const value_idx* const restrict bottomd)
 {
   value_t cm, px, py, pz;
   constexpr int dim2 = (dim == 2) ? 4 : 8;
