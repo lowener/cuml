@@ -389,12 +389,14 @@ class TSNE(Base,
     @generate_docstring(skip_parameters_heading=True,
                         X='dense_sparse',
                         convert_dtype_cast='np.float32')
-    def fit(self, X, convert_dtype=True, knn_graph=None) -> "TSNE":
+    def fit(self, X, y=None, convert_dtype=True, knn_graph=None) -> "TSNE":
         """
         Fit X into an embedded space.
 
         Parameters
         -----------
+        y : None
+            Ignored.
         knn_graph : sparse array-like (device or host), \
                 shape=(n_samples, n_samples)
             A sparse array containing the k-nearest neighbors of X,
@@ -462,13 +464,13 @@ class TSNE(Base,
         # Find best params if learning rate method is adaptive
         if self.learning_rate_method=='adaptive' and (self.method=="barnes_hut"
                                                       or self.method=='fft'):
-            logger.debug("Learning rate is adaptive. In TSNE paper, "
-                         "it has been shown that as n->inf, "
-                         "Barnes Hut works well if n_neighbors->30, "
-                         "learning_rate->20000, early_exaggeration->24.")
-            logger.debug("cuML uses an adpative method."
-                         "n_neighbors decreases to 30 as n->inf. "
-                         "Likewise for the other params.")
+            warnings.warn("Learning rate is adaptive. In TSNE paper, "
+                          "it has been shown that as n->inf, "
+                          "Barnes Hut works well if n_neighbors->30, "
+                          "learning_rate->20000, early_exaggeration->24.")
+            warnings.warn("cuML uses an adpative method."
+                          "n_neighbors decreases to 30 as n->inf. "
+                          "Likewise for the other params.")
             if n <= 2000:
                 self.n_neighbors = min(max(self.n_neighbors, 90), n)
             else:
@@ -478,8 +480,8 @@ class TSNE(Base,
             self.post_learning_rate = self.pre_learning_rate
             self.early_exaggeration = 24.0 if n > 10000 else 12.0
             if logger.should_log_for(logger.level_debug):
-                logger.debug("New n_neighbors = {}, learning_rate = {}, "
-                             "exaggeration = {}"
+                warnings.warn("New n_neighbors = {}, learning_rate = {}, "
+                              "exaggeration = {}"
                              .format(self.n_neighbors, self.pre_learning_rate,
                                      self.early_exaggeration))
 
@@ -540,7 +542,7 @@ class TSNE(Base,
                                                        low-dimensional space.',
                                        'shape': '(n_samples, n_components)'})
     @cuml.internals.api_base_fit_transform()
-    def fit_transform(self, X, convert_dtype=True,
+    def fit_transform(self, X, y=None, convert_dtype=True,
                       knn_graph=None) -> CumlArray:
         """
         Fit X into an embedded space and return that transformed output.
