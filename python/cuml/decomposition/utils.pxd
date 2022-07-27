@@ -23,6 +23,7 @@ cdef extern from "cuml/decomposition/params.hpp" namespace "ML" nogil:
     ctypedef enum solver "ML::solver":
         COV_EIG_DQ "ML::solver::COV_EIG_DQ"
         COV_EIG_JACOBI "ML::solver::COV_EIG_JACOBI"
+        R_SVD "ML::solver::R_SVD"
 
     cdef cppclass params:
         size_t n_rows
