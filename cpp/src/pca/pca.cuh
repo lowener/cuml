@@ -19,15 +19,18 @@
 #include <cuml/decomposition/params.hpp>
 #include <raft/cuda_utils.cuh>
 #include <raft/handle.hpp>
+#include <raft/linalg/divide.cuh>
 #include <raft/linalg/eig.hpp>
 #include <raft/linalg/eltwise.hpp>
 #include <raft/linalg/power.cuh>
+#include <raft/linalg/rsvd.cuh>
 #include <raft/linalg/transpose.hpp>
 #include <raft/matrix/math.hpp>
 #include <raft/matrix/matrix.hpp>
 #include <raft/stats/cov.hpp>
 #include <raft/stats/mean.hpp>
 #include <raft/stats/mean_center.hpp>
+#include <raft/stats/sum.cuh>
 #include <rmm/device_uvector.hpp>
 #include <tsvd/tsvd.cuh>
 
@@ -75,15 +78,17 @@ void pcaFitSvd(const raft::handle_t& handle,
                math_t* explained_var_ratio,
                math_t* singular_vals,
                math_t* mu,
-               math_t* noise_vars,
                const paramsPCA& prms)
 {
+  ASSERT(prms.n_components < std::min(prms.n_rows, prms.n_cols), "Parameter n_components should be less than min(n_rows, n_cols)");
   cudaStream_t stream = handle.get_stream();
-  auto n_components = prms.n_components;
-  auto* right_sing_vecs = components;
-  auto* singular_vals = explained_var;
-  auto left_sing_vecs = raft::make_device_matrix<math_t>(min(n_rows, n_cols), n_rows, stream);
-  const auto nrows_divider = prms.n_rows - 1;
+  //auto n_components = prms.n_components;
+  //auto* right_sing_vecs = components;
+  //auto* singular_vals = explained_var;
+  auto left_sing_vecs = raft::make_device_matrix<math_t>(prms.n_rows, prms.n_rows, stream);
+  auto singular_values = raft::make_device_vector<math_t>(min(prms.n_rows, prms.n_cols), stream);
+  auto right_sing_vecs = raft::make_device_matrix<math_t>(prms.n_cols, prms.n_cols, stream);
+  auto nrows_divider = prms.n_rows - 1;
 
   // Step 1: Center the input
   raft::stats::mean(mu, input, prms.n_cols, prms.n_rows, true, false, stream);
@@ -92,18 +97,22 @@ void pcaFitSvd(const raft::handle_t& handle,
   rmm::device_uvector<math_t> explained_var_all(prms.n_cols, stream);
   raft::linalg::randomizedSVD(handle, input, prms.n_rows, prms.n_cols, prms.n_components,
     2 * prms.n_components, // p
-    2, // TODO: Use prms.n_iter
-    singular_vals, left_sing_vecs.data(), right_sing_vecs, true, false, true);
+    2, // TODO: Use prms.n_iter ?
+    singular_values.data(), left_sing_vecs.data(), right_sing_vecs.data(), true, false, true);
+
+  raft::copy(singular_values.data(), singular_vals, prms.n_components, stream);
+  raft::matrix::truncZeroOrigin(
+    right_sing_vecs.data(), prms.n_cols, components, prms.n_components, prms.n_cols, stream);
   // Step 3: Sign flip ?
   
   // Step 4: Compute explained var
-  raft::linalg::unaryOp(singular_vals, singular_vals, prms.n_components, 
-    [nrows_divider]__device__(const DataT& element) { return (element * element) / nrows_divider; }, stream);
+  raft::linalg::unaryOp(explained_var, singular_vals, prms.n_components, 
+    [nrows_divider]__device__(const math_t& element) { return (element * element) / nrows_divider; }, stream);
   auto d_total_var = raft::make_device_scalar<math_t>(0, stream);
-  raft::linalg::sum(d_total_var.data(), singular_vals, 1, prms.n_rows, true, stream);
+  raft::stats::sum(d_total_var.data(), explained_var, (std::size_t)1, prms.n_rows, true, stream);
   math_t total_var = 0;
   raft::update_host(&total_var, d_total_var.data(), 1, stream);
-  raft::linalg::divideScalar(explained_var_ratio, singular_vals, total_var, prms.n_components, stream);
+  raft::linalg::divideScalar(explained_var_ratio, explained_var, total_var, prms.n_components, stream);
 }
 
 
@@ -112,7 +121,7 @@ void pcaFitSvd(const raft::handle_t& handle,
  * etc.
  * @param[in] handle: cuml handle object
  * @param[in] input: the data is fitted to PCA. Size n_rows x n_cols. The size of the data is
- * indicated in prms.
+ * indicated in prms. Should be column major
  * @param[out] components: the principal components of the input data. Size n_cols * n_components.
  * @param[out] explained_var: explained variances (eigenvalues) of the principal components. Size
  * n_components * 1.
@@ -143,9 +152,9 @@ void pcaFit(const raft::handle_t& handle,
   ASSERT(prms.n_components > 0,
          "Parameter n_components: number of components cannot be less than one");
 
-  if (prms.algorithm == enum_solver::R_SVD)
+  if (prms.algorithm == solver::R_SVD)
   {
-    return pcaFitSvd(handle, input, components, explained_var, explained_var_ratio, singular_vals, mu, noise_vars, prms);
+    return pcaFitSvd(handle, input, components, explained_var, explained_var_ratio, singular_vals, mu, prms);
   }
 
   auto n_components = prms.n_components;

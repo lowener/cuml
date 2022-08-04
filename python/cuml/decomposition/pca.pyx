@@ -109,6 +109,7 @@ cdef extern from "cuml/decomposition/pca.hpp" namespace "ML":
 class Solver(IntEnum):
     COV_EIG_DQ = <underlying_type_t_solver> solver.COV_EIG_DQ
     COV_EIG_JACOBI = <underlying_type_t_solver> solver.COV_EIG_JACOBI
+    R_SVD = <underlying_type_t_solver> solver.R_SVD
 
 
 class PCA(Base,
@@ -316,7 +317,8 @@ class PCA(Base,
             'auto': Solver.COV_EIG_DQ,
             # 'arpack': NOT_SUPPORTED,
             # 'randomized': NOT_SUPPORTED,
-            'jacobi': Solver.COV_EIG_JACOBI
+            'jacobi': Solver.COV_EIG_JACOBI,
+            'randomized': Solver.R_SVD,
         }
         if algorithm not in algo_map:
             msg = "algorithm {!r} is not supported"
