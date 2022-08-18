@@ -71,14 +71,14 @@ void truncCompExpVars(const raft::handle_t& handle,
 }
 
 template <typename math_t>
-void pcaFitSvd(const raft::handle_t& handle,
-               math_t* input,
-               math_t* components,
-               math_t* explained_var,
-               math_t* explained_var_ratio,
-               math_t* singular_vals,
-               math_t* mu,
-               const paramsPCA& prms)
+void pcaFitRSvd(const raft::handle_t& handle,
+                math_t* input,
+                math_t* components,
+                math_t* explained_var,
+                math_t* explained_var_ratio,
+                math_t* singular_vals,
+                math_t* mu,
+                const paramsPCA& prms)
 {
   ASSERT(prms.n_components < std::min(prms.n_rows, prms.n_cols), "Parameter n_components should be less than min(n_rows, n_cols)");
   cudaStream_t stream = handle.get_stream();
@@ -89,6 +89,11 @@ void pcaFitSvd(const raft::handle_t& handle,
   auto singular_values = raft::make_device_vector<math_t>(min(prms.n_rows, prms.n_cols), stream);
   auto right_sing_vecs = raft::make_device_matrix<math_t>(prms.n_cols, prms.n_cols, stream);
   auto nrows_divider = prms.n_rows - 1;
+  auto oversampling = 2 * prms.n_components;
+  if ((oversampling + prms.n_components) >= std::min(prms.n_rows, prms.n_cols))
+  {
+    oversampling = std::min(prms.n_rows, prms.n_cols) - prms.n_components - 1;
+  }
 
   // Step 1: Center the input
   raft::stats::mean(mu, input, prms.n_cols, prms.n_rows, true, false, stream);
@@ -96,7 +101,7 @@ void pcaFitSvd(const raft::handle_t& handle,
   // Step 2: Compute SVD
   rmm::device_uvector<math_t> explained_var_all(prms.n_cols, stream);
   raft::linalg::randomizedSVD(handle, input, prms.n_rows, prms.n_cols, prms.n_components,
-    2 * prms.n_components, // p
+    oversampling,
     2, // TODO: Use prms.n_iter ?
     singular_values.data(), left_sing_vecs.data(), right_sing_vecs.data(), true, false, true);
 
@@ -154,7 +159,7 @@ void pcaFit(const raft::handle_t& handle,
 
   if (prms.algorithm == solver::R_SVD)
   {
-    return pcaFitSvd(handle, input, components, explained_var, explained_var_ratio, singular_vals, mu, prms);
+    return pcaFitRSvd(handle, input, components, explained_var, explained_var_ratio, singular_vals, mu, prms);
   }
 
   auto n_components = prms.n_components;

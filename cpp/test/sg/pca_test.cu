@@ -15,8 +15,8 @@
  */
 
 #include <cuml/decomposition/params.hpp>
+#include <cuml/decomposition/pca.hpp>
 #include <gtest/gtest.h>
-#include <pca/pca.cuh>
 #include <raft/cuda_utils.cuh>
 #include <raft/cudart_utils.h>
 #include <raft/random/rng.hpp>
@@ -123,24 +123,21 @@ class PcaTest : public ::testing::TestWithParam<PcaInputs<T>> {
            singular_vals.data(),
            mean.data(),
            noise_vars.data(),
-           prms,
-           stream);
+           prms);
     pcaTransform(handle,
                  data.data(),
                  components.data(),
                  trans_data.data(),
                  singular_vals.data(),
                  mean.data(),
-                 prms,
-                 stream);
+                 prms);
     pcaInverseTransform(handle,
                         trans_data.data(),
                         components.data(),
                         singular_vals.data(),
                         mean.data(),
                         data_back.data(),
-                        prms,
-                        stream);
+                        prms);
   }
 
   void advancedTest()
@@ -183,8 +180,7 @@ class PcaTest : public ::testing::TestWithParam<PcaInputs<T>> {
                     singular_vals2.data(),
                     mean2.data(),
                     noise_vars2.data(),
-                    prms,
-                    stream);
+                    prms);
 
     pcaInverseTransform(handle,
                         data2_trans.data(),
@@ -192,8 +188,7 @@ class PcaTest : public ::testing::TestWithParam<PcaInputs<T>> {
                         singular_vals2.data(),
                         mean2.data(),
                         data2_back.data(),
-                        prms,
-                        stream);
+                        prms);
   }
 
  protected:

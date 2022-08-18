@@ -32,9 +32,10 @@ from cuml.common.exceptions import NotFittedError
 @pytest.mark.parametrize('datatype', [np.float32, np.float64])
 @pytest.mark.parametrize('input_type', ['ndarray'])
 @pytest.mark.parametrize('use_handle', [True, False])
-@pytest.mark.parametrize('name', [unit_param(None), quality_param('digits'),
+@pytest.mark.parametrize('name', [unit_param(None), unit_param('digits'),
                          stress_param('blobs')])
-def test_pca_fit(datatype, input_type, name, use_handle):
+@pytest.mark.parametrize('svd_solver', ['full', 'randomized', 'jacobi'])
+def test_pca_fit(datatype, input_type, name, use_handle, svd_solver):
 
     if name == 'blobs':
         pytest.skip('fails when using blobs dataset')
@@ -55,7 +56,7 @@ def test_pca_fit(datatype, input_type, name, use_handle):
     skpca.fit(X)
 
     handle, stream = get_handle(use_handle)
-    cupca = cuPCA(n_components=2, handle=handle)
+    cupca = cuPCA(n_components=2, handle=handle, svd_solver=svd_solver)
     cupca.fit(X)
     cupca.handle.sync()
 
@@ -109,10 +110,11 @@ def test_pca_defaults(n_samples, n_features, sparse):
 @pytest.mark.parametrize('datatype', [np.float32, np.float64])
 @pytest.mark.parametrize('input_type', ['ndarray'])
 @pytest.mark.parametrize('use_handle', [True, False])
-@pytest.mark.parametrize('name', [unit_param(None), quality_param('iris'),
+@pytest.mark.parametrize('name', [unit_param(None), unit_param('iris'),
                          stress_param('blobs')])
+@pytest.mark.parametrize('svd_solver', ['full', 'randomized', 'jacobi'])
 def test_pca_fit_then_transform(datatype, input_type,
-                                name, use_handle):
+                                name, use_handle, svd_solver):
     blobs_n_samples = 500000
     if name == 'blobs' and pytest.max_gpu_memory < 32:
         if pytest.adapt_stress_test:
@@ -142,7 +144,7 @@ def test_pca_fit_then_transform(datatype, input_type,
         Xskpca = skpca.transform(X)
 
     handle, stream = get_handle(use_handle)
-    cupca = cuPCA(n_components=2, handle=handle)
+    cupca = cuPCA(n_components=2, handle=handle, svd_solver=svd_solver)
 
     cupca.fit(X)
     X_cupca = cupca.transform(X)
@@ -157,7 +159,7 @@ def test_pca_fit_then_transform(datatype, input_type,
 @pytest.mark.parametrize('datatype', [np.float32, np.float64])
 @pytest.mark.parametrize('input_type', ['ndarray'])
 @pytest.mark.parametrize('use_handle', [True, False])
-@pytest.mark.parametrize('name', [unit_param(None), quality_param('iris'),
+@pytest.mark.parametrize('name', [unit_param(None), unit_param('iris'),
                          stress_param('blobs')])
 def test_pca_fit_transform(datatype, input_type,
                            name, use_handle):
@@ -204,8 +206,7 @@ def test_pca_fit_transform(datatype, input_type,
 @pytest.mark.parametrize('datatype', [np.float32, np.float64])
 @pytest.mark.parametrize('input_type', ['ndarray'])
 @pytest.mark.parametrize('use_handle', [True, False])
-@pytest.mark.parametrize('name', [unit_param(None), quality_param('quality'),
-                         stress_param('blobs')])
+@pytest.mark.parametrize('name', [unit_param(None), stress_param('blobs')])
 @pytest.mark.parametrize('nrows', [unit_param(500), quality_param(5000)])
 def test_pca_inverse_transform(datatype, input_type,
                                name, use_handle, nrows):

@@ -214,10 +214,13 @@ class PCA(Base,
     random_state : int / None (default = None)
         If you want results to be the same when you restart Python, select a
         state.
-    svd_solver : 'full' or 'jacobi' or 'auto' (default = 'full')
+    svd_solver : 'full' or 'jacobi' or 'randomized' or 'auto' (default = 'auto')
         Full uses a eigendecomposition of the covariance matrix then discards
         components.
         Jacobi is much faster as it iteratively corrects, but is less accurate.
+        Randomized (or Randomized-SVD) computes the components needed to sufficient
+        accuracy and can be very fast when the number of components needed is
+        small enough.
     tol : float (default = 1e-7)
         Used if algorithm = "jacobi". Smaller tolerance can increase accuracy,
         but but will slow down the algorithm's convergence.
@@ -316,7 +319,6 @@ class PCA(Base,
             'full': Solver.COV_EIG_DQ,
             'auto': Solver.COV_EIG_DQ,
             # 'arpack': NOT_SUPPORTED,
-            # 'randomized': NOT_SUPPORTED,
             'jacobi': Solver.COV_EIG_JACOBI,
             'randomized': Solver.R_SVD,
         }
