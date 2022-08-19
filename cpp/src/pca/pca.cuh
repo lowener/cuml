@@ -85,9 +85,9 @@ void pcaFitRSvd(const raft::handle_t& handle,
   //auto n_components = prms.n_components;
   //auto* right_sing_vecs = components;
   //auto* singular_vals = explained_var;
-  auto left_sing_vecs = raft::make_device_matrix<math_t>(prms.n_rows, prms.n_rows, stream);
-  auto singular_values = raft::make_device_vector<math_t>(min(prms.n_rows, prms.n_cols), stream);
-  auto right_sing_vecs = raft::make_device_matrix<math_t>(prms.n_cols, prms.n_cols, stream);
+  auto left_sing_vecs = raft::make_device_matrix<math_t>(handle, prms.n_rows, prms.n_rows);
+  auto singular_values = raft::make_device_vector<math_t>(handle, min(prms.n_rows, prms.n_cols));
+  auto right_sing_vecs = raft::make_device_matrix<math_t>(handle, prms.n_cols, prms.n_cols);
   auto nrows_divider = prms.n_rows - 1;
   auto oversampling = 2 * prms.n_components;
   if ((oversampling + prms.n_components) >= std::min(prms.n_rows, prms.n_cols))
@@ -103,20 +103,20 @@ void pcaFitRSvd(const raft::handle_t& handle,
   raft::linalg::randomizedSVD(handle, input, prms.n_rows, prms.n_cols, prms.n_components,
     oversampling,
     2, // TODO: Use prms.n_iter ?
-    singular_values.data(), left_sing_vecs.data(), right_sing_vecs.data(), true, false, true);
+    singular_values.data_handle(), left_sing_vecs.data_handle(), right_sing_vecs.data_handle(), true, false, true);
 
-  raft::copy(singular_values.data(), singular_vals, prms.n_components, stream);
+  raft::copy(singular_values.data_handle(), singular_vals, prms.n_components, stream);
   raft::matrix::truncZeroOrigin(
-    right_sing_vecs.data(), prms.n_cols, components, prms.n_components, prms.n_cols, stream);
+    right_sing_vecs.data_handle(), prms.n_cols, components, prms.n_components, prms.n_cols, stream);
   // Step 3: Sign flip ?
   
   // Step 4: Compute explained var
   raft::linalg::unaryOp(explained_var, singular_vals, prms.n_components, 
     [nrows_divider]__device__(const math_t& element) { return (element * element) / nrows_divider; }, stream);
-  auto d_total_var = raft::make_device_scalar<math_t>(0, stream);
-  raft::stats::sum(d_total_var.data(), explained_var, (std::size_t)1, prms.n_rows, true, stream);
+  auto d_total_var = raft::make_device_scalar<math_t>(handle, 0);
+  raft::stats::sum(d_total_var.data_handle(), explained_var, (std::size_t)1, prms.n_rows, true, stream);
   math_t total_var = 0;
-  raft::update_host(&total_var, d_total_var.data(), 1, stream);
+  raft::update_host(&total_var, d_total_var.data_handle(), 1, stream);
   raft::linalg::divideScalar(explained_var_ratio, explained_var, total_var, prms.n_components, stream);
 }
 
