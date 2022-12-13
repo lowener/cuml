@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <raft/core/device_mdarray.hpp>
 #include <raft/linalg/add.cuh>
 #include <raft/linalg/gemm.cuh>
 #include <raft/linalg/map.cuh>
@@ -92,16 +93,17 @@ void ridgeSVD(const raft::handle_t& handle,
   ASSERT(n_cols > 0, "ridgeSVD: number of columns cannot be less than one");
   ASSERT(n_rows > 1, "ridgeSVD: number of rows cannot be less than two");
 
-  auto U_len = n_rows * n_cols;
-  auto V_len = n_cols * n_cols;
+  auto S = raft::make_device_vector<math_t, size_t>(handle, n_cols);
+  auto U = raft::make_device_matrix<math_t, size_t, raft::col_major>(handle, n_rows, n_cols);
+  auto V = raft::make_device_matrix<math_t, size_t, raft::col_major>(handle, n_cols, n_cols);
 
-  rmm::device_uvector<math_t> S(n_cols, stream);
-  rmm::device_uvector<math_t> V(V_len, stream);
-  rmm::device_uvector<math_t> U(U_len, stream);
-
-  raft::linalg::svdQR(
-    handle, A, n_rows, n_cols, S.data(), U.data(), V.data(), true, true, true, stream);
-  ridgeSolve(handle, S.data(), V.data(), U.data(), n_rows, n_cols, b, alpha, n_alpha, w);
+  raft::linalg::svd_qr_transpose_right_vec(
+    handle,
+    raft::make_device_matrix_view(A, n_rows, n_cols),
+    S.view(),
+    std::make_optional(U.view()),
+    std::make_optional(V.view()));
+  ridgeSolve(handle, S.data_handle(), V.data_handle(), U.data_handle(), n_rows, n_cols, b, alpha, n_alpha, w);
 }
 
 template <typename math_t>
@@ -124,11 +126,13 @@ void ridgeEig(const raft::handle_t& handle,
   auto U_len = n_rows * n_cols;
   auto V_len = n_cols * n_cols;
 
-  rmm::device_uvector<math_t> S(n_cols, stream);
-  rmm::device_uvector<math_t> V(V_len, stream);
-  rmm::device_uvector<math_t> U(U_len, stream);
+  auto S = raft::make_device_vector<math_t, size_t>(handle, n_cols);
+  auto U = raft::make_device_matrix<math_t, size_t, raft::col_major>(handle, n_rows, n_cols);
+  auto V = raft::make_device_matrix<math_t, size_t, raft::col_major>(handle, n_cols, n_cols);
 
-  raft::linalg::svdEig(handle, A, n_rows, n_cols, S.data(), U.data(), V.data(), true, stream);
+  raft::linalg::svd_eig(handle,
+    raft::make_device_matrix_view(A, n_rows, n_cols),
+    S.view(), V.view(), std::make_optional(U.view()));
 
   ridgeSolve(handle, S.data(), V.data(), U.data(), n_rows, n_cols, b, alpha, n_alpha, w);
 }
