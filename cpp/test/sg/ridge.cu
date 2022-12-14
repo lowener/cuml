@@ -16,6 +16,7 @@
 
 #include <cuml/linear_model/glm.hpp>
 #include <gtest/gtest.h>
+#include <raft/random/make_regression.cuh>
 #include <raft/util/cuda_utils.cuh>
 #include <raft/util/cudart_utils.hpp>
 #include <rmm/device_uvector.hpp>
@@ -57,9 +58,13 @@ class RidgeTest : public ::testing::TestWithParam<RidgeInputs<T>> {
       coef_sw(1, stream),
       coef_sw_ref(1, stream)
   {
-    basicTest();
-    basicTest2();
-    testSampleWeight();
+    if (params.n_col * params.n_row >= 20)
+      testIndex64();
+    else {
+      basicTest();
+      basicTest2();
+      testSampleWeight();
+    }
   }
 
  protected:
@@ -271,6 +276,38 @@ class RidgeTest : public ::testing::TestWithParam<RidgeInputs<T>> {
              sample_weight.data());
   }
 
+  void testIndex64()
+  {
+    auto len = params.n_row * params.n_col;
+
+    rmm::device_uvector<T> data_sc(len, stream);
+    rmm::device_uvector<T> labels_sc(params.n_row, stream);
+
+    raft::random::make_regression(handle,
+                                  data_sc.data(),
+                                  labels_sc.data(),
+                                  (std::int64_t)params.n_row,
+                                  (std::int64_t)params.n_col,
+                                  (std::int64_t)3,
+                                  stream);
+
+    T intercept_sc = T(0);
+    T alpha_sc     = T(1.0);
+
+    ridgeFit(handle,
+             data_sc.data(),
+             params.n_row,
+             params.n_col,
+             labels_sc.data(),
+             &alpha_sc,
+             1,
+             coef_sc.data(),
+             &intercept_sc,
+             true,
+             false,
+             params.algo);
+  }
+
  protected:
   raft::handle_t handle;
   cudaStream_t stream = 0;
@@ -289,6 +326,12 @@ const std::vector<RidgeInputs<float>> inputsf2 = {{0.001f, 3, 2, 2, 0, 0.5f},
 
 const std::vector<RidgeInputs<double>> inputsd2 = {{0.001, 3, 2, 2, 0, 0.5},
                                                    {0.001, 3, 2, 2, 1, 0.5}};
+
+const std::vector<RidgeInputs<float>> inputsf64 = {{0.001f, 60000, 100, 0, 0, 0.5f},
+                                                   {0.001f, 100, 60000, 0, 1, 0.5f}};
+
+const std::vector<RidgeInputs<double>> inputsd64 = {{0.001, 60000, 100, 0, 0, 0.5},
+                                                    {0.001, 100, 60000, 0, 1, 0.5}};
 
 typedef RidgeTest<float> RidgeTestF;
 TEST_P(RidgeTestF, Fit)
@@ -346,9 +389,19 @@ TEST_P(RidgeTestD, Fit)
     coef_sw_ref.data(), coef_sw.data(), 1, raft::CompareApproxAbs<double>(params.tol)));
 }
 
+typedef RidgeTest<float> RidgeTest64F;
+TEST_P(RidgeTest64F, Fit) {}
+
+typedef RidgeTest<double> RidgeTest64D;
+TEST_P(RidgeTest64D, Fit) {}
+
 INSTANTIATE_TEST_CASE_P(RidgeTests, RidgeTestF, ::testing::ValuesIn(inputsf2));
 
 INSTANTIATE_TEST_CASE_P(RidgeTests, RidgeTestD, ::testing::ValuesIn(inputsd2));
+
+INSTANTIATE_TEST_CASE_P(RidgeTests, RidgeTest64F, ::testing::ValuesIn(inputsf64));
+
+INSTANTIATE_TEST_CASE_P(RidgeTests, RidgeTest64D, ::testing::ValuesIn(inputsd64));
 
 }  // namespace GLM
 }  // end namespace ML
